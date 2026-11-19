@@ -45,6 +45,7 @@ type Identity struct {
 }
 
 type contextKey struct{}
+type whitelistBypassKey struct{}
 
 func WithIdentity(ctx context.Context, identity Identity) context.Context {
 	return context.WithValue(ctx, contextKey{}, identity)
@@ -77,4 +78,16 @@ func Country(r *http.Request) string {
 		return identity.Geo.Country
 	}
 	return ""
+}
+
+func WithWhitelistBypass(ctx context.Context) context.Context {
+	return context.WithValue(ctx, whitelistBypassKey{}, true)
+}
+
+func HasWhitelistBypass(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	bypass, _ := ctx.Value(whitelistBypassKey{}).(bool)
+	return bypass
 }

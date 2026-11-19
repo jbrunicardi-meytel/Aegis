@@ -1003,6 +1003,7 @@ export type NavItemKey =
   | 'traffic-overview'
   | 'traffic-ratelimit'
   | 'traffic-blacklist'
+  | 'traffic-whitelist'
   | 'traffic-reputation'
   | 'traffic-geo'
   | 'traffic-ddos'
@@ -1207,6 +1208,8 @@ export interface IPBlacklistConfig {
   }>;
   total_count?: number;
 }
+
+export type IPWhitelistConfig = IPBlacklistConfig;
 
 export interface BlockedIPStatus {
   blocked: Array<{

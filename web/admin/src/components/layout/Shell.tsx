@@ -121,6 +121,7 @@ const NAV_CATEGORIES: NavCategoryDef[] = [
         icon: Activity,
         items: [
           { key: 'traffic-control', label: 'Overview' },
+          { key: 'traffic-whitelist', label: 'IP Whitelist' },          
           { key: 'traffic-blacklist', label: 'IP Blacklist' },
           { key: 'traffic-reputation', label: 'IP Reputation' },
           { key: 'traffic-ratelimit', label: 'Rate Limiting' },

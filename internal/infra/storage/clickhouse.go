@@ -434,6 +434,7 @@ type RequestLog struct {
 	IP                  string
 	Host                string
 	Path                string
+	QueryString         string
 	Method              string
 	Status              int
 	LatencyMs           int64
@@ -477,6 +478,9 @@ func LogRequest(l RequestLog) {
 	}
 	if l.Referer != "" {
 		metadata["referer"] = l.Referer
+	}
+	if l.QueryString != "" {
+		metadata["query_string"] = l.QueryString
 	}
 	if l.Upstream != "" {
 		metadata["upstream"] = l.Upstream

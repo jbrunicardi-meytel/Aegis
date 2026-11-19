@@ -123,12 +123,8 @@ func isPaidFeatureActivated(key string, requested, currentVal interface{}) bool 
 
 type Config struct {
 	Geo       infraConfig.GeoConfig `json:"geo" mapstructure:"geo"`
-	Blacklist struct {
-		Enabled bool               `json:"enabled" mapstructure:"enabled"`
-		IPs     []string           `json:"ips" mapstructure:"ips"`
-		CIDRs   []string           `json:"cidrs" mapstructure:"cidrs"`
-		Entries []BlockEntryConfig `json:"entries" mapstructure:"entries"`
-	} `json:"blacklist" mapstructure:"blacklist"`
+	Blacklist AddressListConfig    `json:"blacklist" mapstructure:"blacklist"`
+	Whitelist AddressListConfig    `json:"whitelist" mapstructure:"whitelist"`
 	RateLimit struct {
 		Enabled         bool                       `json:"enabled" mapstructure:"enabled"`
 		DefaultRate     int                        `json:"default_rate" mapstructure:"default_rate"`
@@ -149,6 +145,13 @@ type Config struct {
 	} `json:"conn_stats" mapstructure:"conn_stats"`
 }
 
+type AddressListConfig struct {
+	Enabled bool               `json:"enabled" mapstructure:"enabled"`
+	IPs     []string           `json:"ips" mapstructure:"ips"`
+	CIDRs   []string           `json:"cidrs" mapstructure:"cidrs"`
+	Entries []BlockEntryConfig `json:"entries" mapstructure:"entries"`
+}
+
 // BlockEntryConfig gives Community the same explicit expiry semantics used by
 // the Traffic Control UI. A capability must either enforce a saved entry or be
 // hidden; it must never be a persistence-only affordance.
@@ -166,6 +169,7 @@ type Section struct {
 	settings         map[string]interface{}
 	config           Config
 	blacklist        *blacklist.Blacklist
+	whitelist        *blacklist.Blacklist
 	limiter          *ratelimit.Limiter
 	connections      *connstats.Tracker
 	geoService       *geoip.Service
@@ -357,31 +361,8 @@ func (s *Section) UpdateConfig(input sections.SectionConfig) error {
 func (s *Section) apply(config Config, settings map[string]interface{}) {
 	s.config = config
 	s.settings = settings
-	s.blacklist = blacklist.New()
-	s.blacklist.SetEnabled(config.Blacklist.Enabled)
-	for _, value := range config.Blacklist.IPs {
-		_ = s.blacklist.AddIP(value, "manual", 0)
-	}
-	for _, value := range config.Blacklist.CIDRs {
-		_ = s.blacklist.AddCIDR(value, "manual", 0)
-	}
-	for _, entry := range config.Blacklist.Entries {
-		remaining := time.Until(entry.ExpiresAt)
-		if entry.ExpiresAt.IsZero() {
-			remaining = 0
-		} else if remaining <= 0 {
-			continue
-		}
-		reason := strings.TrimSpace(entry.Note)
-		if reason == "" {
-			reason = "manual"
-		}
-		if strings.Contains(entry.Target, "/") {
-			_ = s.blacklist.AddCIDR(entry.Target, reason, remaining)
-		} else {
-			_ = s.blacklist.AddIP(entry.Target, reason, remaining)
-		}
-	}
+	s.blacklist = buildAddressList(config.Blacklist)
+	s.whitelist = buildAddressList(config.Whitelist)
 	pathRules := append([]ratelimit.PathRuleConfig(nil), config.RateLimit.PathRules...)
 	if len(pathRules) == 0 && len(config.RateLimit.PathOverrides) > 0 {
 		pathRules = append(pathRules, config.RateLimit.PathOverrides...)
@@ -404,6 +385,35 @@ func (s *Section) apply(config Config, settings map[string]interface{}) {
 	s.geoBlocker = geoip.NewBlocker(policyConfig(config.Geo))
 }
 
+func buildAddressList(config AddressListConfig) *blacklist.Blacklist {
+	list := blacklist.New()
+	list.SetEnabled(config.Enabled)
+	for _, value := range config.IPs {
+		_ = list.AddIP(value, "manual", 0)
+	}
+	for _, value := range config.CIDRs {
+		_ = list.AddCIDR(value, "manual", 0)
+	}
+	for _, entry := range config.Entries {
+		remaining := time.Until(entry.ExpiresAt)
+		if entry.ExpiresAt.IsZero() {
+			remaining = 0
+		} else if remaining <= 0 {
+			continue
+		}
+		reason := strings.TrimSpace(entry.Note)
+		if reason == "" {
+			reason = "manual"
+		}
+		if strings.Contains(entry.Target, "/") {
+			_ = list.AddCIDR(entry.Target, reason, remaining)
+		} else {
+			_ = list.AddIP(entry.Target, reason, remaining)
+		}
+	}
+	return list
+}
+
 func validate(config Config) error {
 	if config.RateLimit.DefaultRate < 0 || config.RateLimit.DefaultBurst < 0 {
 		return errors.New("rate limit and burst must be non-negative")
@@ -413,22 +423,11 @@ func validate(config Config) error {
 			return errors.New("rate-limit window is invalid")
 		}
 	}
-	for _, value := range config.Blacklist.IPs {
-		if net.ParseIP(value) == nil {
-			return errors.New("blacklist contains an invalid IP")
-		}
+	if err := validateAddressList(config.Blacklist, "blacklist"); err != nil {
+		return err
 	}
-	for _, value := range config.Blacklist.CIDRs {
-		if _, _, err := net.ParseCIDR(value); err != nil {
-			return errors.New("blacklist contains an invalid CIDR")
-		}
-	}
-	for _, entry := range config.Blacklist.Entries {
-		if net.ParseIP(entry.Target) == nil {
-			if _, _, err := net.ParseCIDR(entry.Target); err != nil {
-				return errors.New("blacklist contains an invalid entry target")
-			}
-		}
+	if err := validateAddressList(config.Whitelist, "whitelist"); err != nil {
+		return err
 	}
 	policy := &infraConfig.RouteCountryPolicy{Enabled: config.Geo.Enabled, AllowCountries: config.Geo.AllowCountries, BlockCountries: config.Geo.BlockCountries, Groups: append(append([]string{}, config.Geo.Groups...), config.Geo.Regions...), Exceptions: config.Geo.Exceptions}
 	if err := infraConfig.ValidateRouteCountryPolicy(policy); err != nil {
@@ -442,8 +441,42 @@ func validate(config Config) error {
 	return nil
 }
 
+func validateAddressList(config AddressListConfig, name string) error {
+	for _, value := range config.IPs {
+		if net.ParseIP(value) == nil {
+			return fmt.Errorf("%s contains an invalid IP", name)
+		}
+	}
+	for _, value := range config.CIDRs {
+		if _, _, err := net.ParseCIDR(value); err != nil {
+			return fmt.Errorf("%s contains an invalid CIDR", name)
+		}
+	}
+	for _, entry := range config.Entries {
+		if net.ParseIP(entry.Target) == nil {
+			if _, _, err := net.ParseCIDR(entry.Target); err != nil {
+				return fmt.Errorf("%s contains an invalid entry target", name)
+			}
+		}
+	}
+	return nil
+}
+
 func (s *Section) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		identity, _ := requestctx.FromRequest(r)
+		clientIP := identity.ClientIP
+		if clientIP == "" {
+			clientIP = remoteHost(r.RemoteAddr)
+		}
+		s.mu.RLock()
+		whitelist := s.whitelist
+		s.mu.RUnlock()
+		if whitelisted, _ := whitelist.IsBlocked(clientIP); whitelisted {
+			r = r.WithContext(requestctx.WithWhitelistBypass(r.Context()))
+			next.ServeHTTP(w, r)
+			return
+		}
 		if !s.Enabled() {
 			next.ServeHTTP(w, r)
 			return
@@ -453,11 +486,6 @@ func (s *Section) Middleware(next http.Handler) http.Handler {
 			return
 		}
 		s.total.Add(1)
-		identity, _ := requestctx.FromRequest(r)
-		clientIP := identity.ClientIP
-		if clientIP == "" {
-			clientIP = remoteHost(r.RemoteAddr)
-		}
 		geoData := identity.Geo
 		if geoData.State != requestctx.GeoKnown && s.geoService != nil {
 			geoData = s.geoService.Lookup(clientIP)
@@ -903,7 +931,7 @@ func (s *Section) handleConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		allowed := map[string]bool{
-			"enabled": true, "protection_level": true, "blacklist": true, "geo": true,
+			"enabled": true, "protection_level": true, "blacklist": true, "whitelist": true, "geo": true,
 			"ratelimit": true, "rate_limit": true, "conn_stats": true, "connections": true,
 			"control": true, "priority": true, "ddos": true,
 			// Preserve the explicit entitlement error for known paid-only keys.

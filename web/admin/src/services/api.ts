@@ -29,6 +29,7 @@ import type {
   TrafficGeoConfig,
   TrafficGeoStatus,
   IPBlacklistConfig,
+  IPWhitelistConfig,
   BlockedIPStatus,
   TrafficTrustedException,
   LicenseSnapshot,
@@ -282,6 +283,7 @@ export async function apiFetch(path: string, init: RequestInit = {}): Promise<Re
 
 export type TrafficSectionTarget =
   | 'blacklist'
+  | 'whitelist'
   | 'geo'
   | 'ratelimit'
   | 'reputation'
@@ -368,6 +370,41 @@ export function normalizeTrafficConfigForSave(
     ...(typeof rawBl.auto_expire === 'number' && Number.isFinite(rawBl.auto_expire)
       ? { auto_expire: rawBl.auto_expire }
       : {}),
+  };
+
+  const rawWl = raw.whitelist || {};
+  const wlIps = Array.isArray(rawWl.ips) ? rawWl.ips.map((value: any) => String(value).trim()).filter(Boolean) : [];
+  const wlCidrs = Array.isArray(rawWl.cidrs) ? rawWl.cidrs.map((value: any) => String(value).trim()).filter(Boolean) : [];
+  const wlEntries: Array<{ target: string; note?: string; expires_at?: string }> = [];
+  if (Array.isArray(rawWl.entries)) {
+    for (const entry of rawWl.entries) {
+      const target = String(entry?.target || '').trim();
+      if (!target) continue;
+      const item: { target: string; note?: string; expires_at?: string } = {
+        target,
+        ...(entry?.note ? { note: String(entry.note).trim() } : {}),
+      };
+      if (entry?.expires_at) {
+        const expMs = Date.parse(String(entry.expires_at));
+        if (!Number.isNaN(expMs)) {
+          if (expMs <= nowMs) continue;
+          item.expires_at = new Date(expMs).toISOString();
+        }
+      }
+      wlEntries.push(item);
+    }
+  }
+  const whitelistEntryTargets = new Set(wlEntries.map((entry) => entry.target));
+  const cleanWhitelistIPs = wlIps.filter((ip: string) => !whitelistEntryTargets.has(ip));
+  const cleanWhitelistCIDRs = wlCidrs.filter((cidr: string) => !whitelistEntryTargets.has(cidr));
+  payload.whitelist = {
+    enabled:
+      rawWl.enabled !== undefined
+        ? Boolean(rawWl.enabled)
+        : cleanWhitelistIPs.length > 0 || cleanWhitelistCIDRs.length > 0 || wlEntries.length > 0,
+    ips: cleanWhitelistIPs,
+    cidrs: cleanWhitelistCIDRs,
+    entries: wlEntries,
   };
 
   const rawGeo = raw.geo || {};
@@ -669,6 +706,7 @@ export function normalizeTrafficConfigForSave(
   if (
     !isCommercial &&
     (targetSection === 'blacklist' ||
+      targetSection === 'whitelist' ||
       targetSection === 'geo' ||
       targetSection === 'ratelimit' ||
       targetSection === 'full')
@@ -3927,6 +3965,28 @@ export const apiService = {
     }
   },
 
+  async getIPWhitelistConfig(): Promise<IPWhitelistConfig> {
+    try {
+      const res = await apiFetch('/api/sections/traffic_control/config');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const whitelist = data?.whitelist || {};
+      const ips = Array.isArray(whitelist.ips) ? whitelist.ips : [];
+      const cidrs = Array.isArray(whitelist.cidrs) ? whitelist.cidrs : [];
+      const entries = Array.isArray(whitelist.entries) ? whitelist.entries : [];
+      return {
+        enabled: Boolean(whitelist.enabled),
+        ips,
+        cidrs,
+        entries,
+        total_count: ips.length + cidrs.length + entries.length,
+      };
+    } catch (err) {
+      console.warn('API getIPWhitelistConfig error:', err);
+      return { enabled: false, ips: [], cidrs: [], entries: [], total_count: 0 };
+    }
+  },
+
   async getBlockedIPs(): Promise<BlockedIPStatus> {
     try {
       const res = await apiFetch('/api/sections/traffic_control/blocked');
@@ -3949,6 +4009,10 @@ export const apiService = {
 
   async saveIPBlacklistConfig(blacklistConfig: IPBlacklistConfig): Promise<boolean> {
     return await this.saveTrafficControlFullConfig({ blacklist: blacklistConfig }, 'blacklist');
+  },
+
+  async saveIPWhitelistConfig(whitelistConfig: IPWhitelistConfig): Promise<boolean> {
+    return await this.saveTrafficControlFullConfig({ whitelist: whitelistConfig }, 'whitelist');
   },
 
   async addIPBlockEntry(entry: { target: string; note?: string; expires_in?: string }): Promise<boolean> {

@@ -84,16 +84,16 @@ type CommunityRuleTarget struct {
 }
 
 type CommunityExclusion struct {
-	ID          string    `json:"id"`
-	RuleID      string    `json:"rule_id,omitempty"`
-	Paths       []string  `json:"paths,omitempty"`
-	Params      []string  `json:"params,omitempty"`
-	IPs         []string  `json:"ips,omitempty"`
-	Reason      string    `json:"reason,omitempty"`
-	Description string    `json:"description,omitempty"`
-	ExpiresAt   string    `json:"expires_at,omitempty"`
-	Enabled     bool      `json:"enabled"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID          string    `json:"id" mapstructure:"id"`
+	RuleID      string    `json:"rule_id,omitempty" mapstructure:"rule_id"`
+	Paths       []string  `json:"paths,omitempty" mapstructure:"paths"`
+	Params      []string  `json:"params,omitempty" mapstructure:"params"`
+	IPs         []string  `json:"ips,omitempty" mapstructure:"ips"`
+	Reason      string    `json:"reason,omitempty" mapstructure:"reason"`
+	Description string    `json:"description,omitempty" mapstructure:"description"`
+	ExpiresAt   string    `json:"expires_at,omitempty" mapstructure:"expires_at"`
+	Enabled     bool      `json:"enabled" mapstructure:"enabled"`
+	CreatedAt   time.Time `json:"created_at" mapstructure:"created_at"`
 }
 
 type Section struct {
@@ -214,10 +214,15 @@ func (s *Section) Init(input sections.SectionConfig) error {
 		}
 	}
 	if rawExcls, ok := input.Settings["exclusions_data"]; ok {
-		var restored []CommunityExclusion
-		if err := mapstructure.Decode(rawExcls, &restored); err == nil && len(restored) > 0 {
-			s.exclusions = restored
+		rawJSON, err := json.Marshal(rawExcls)
+		if err != nil {
+			return fmt.Errorf("encode WAF exclusions: %w", err)
 		}
+		var restored []CommunityExclusion
+		if err := json.Unmarshal(rawJSON, &restored); err != nil {
+			return fmt.Errorf("decode WAF exclusions: %w", err)
+		}
+		s.exclusions = restored
 	}
 	s.mu.Unlock()
 	return nil
@@ -416,7 +421,7 @@ func (s *Section) Middleware(next http.Handler) http.Handler {
 		s.mu.RLock()
 		enabled, engine, config := s.enabled, s.waf, s.config
 		s.mu.RUnlock()
-		if !enabled || engine == nil || pathExcluded(r.URL.Path, config.ExcludedPaths) || s.excluded(r) {
+		if requestctx.HasWhitelistBypass(r.Context()) || !enabled || engine == nil || pathExcluded(r.URL.Path, config.ExcludedPaths) || s.excluded(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -538,6 +543,9 @@ func (s *Section) recordWAFEvent(r *http.Request, tx corazatypes.Transaction, ac
 			sev := normalizeCorazaSeverity(mr.Rule().Severity().String())
 			msg := strings.TrimSpace(mr.Message())
 
+			if isCRSControlRule(id) {
+				continue
+			}
 			if isInternalCRSRule(id) {
 				if msg != "" {
 					fallbackIDs = append(fallbackIDs, idStr)
@@ -623,6 +631,35 @@ func (s *Section) recordWAFEvent(r *http.Request, tx corazatypes.Transaction, ac
 	severitiesJSON, _ := json.Marshal(severities)
 	categoriesJSON, _ := json.Marshal(categories)
 	matchedFieldsJSON, _ := json.Marshal(matchedFields)
+	metadataJSON, _ := json.Marshal(map[string]string{
+		"host":          r.Host,
+		"query_string":  r.URL.RawQuery,
+		"rule_ids":      string(ruleIDsJSON),
+		"rule_messages": string(ruleMessagesJSON),
+		"severities":    string(severitiesJSON),
+		"categories":    string(categoriesJSON),
+	})
+
+	storage.LogSectionEvent(storage.SectionEventLog{
+		ID:         uuid.NewString(),
+		Timestamp:  time.Now().Unix(),
+		Section:    SectionID,
+		EventType:  "waf",
+		Action:     action,
+		ClientIP:   clientIP,
+		Method:     r.Method,
+		Path:       r.URL.Path,
+		StatusCode: status,
+		LatencyMs:  latencyMs,
+		Country:    identity.Geo.Country,
+		UserAgent:  r.UserAgent(),
+		RuleID:     firstRuleID,
+		RuleName:   firstRuleMsg,
+		RuleType:   "waf",
+		Score:      anomalyScore,
+		RequestID:  reqID,
+		Metadata:   string(metadataJSON),
+	})
 
 	storage.LogWAFEvent(storage.WAFEventLog{
 		EventID:           uuid.NewString(),
@@ -669,11 +706,30 @@ func hasSignificantMatchedRules(tx corazatypes.Transaction) bool {
 }
 
 func isInternalCRSRule(id int) bool {
-	if id >= 900000 && id < 910000 {
+	if (id >= 900000 && id < 910000) || isCRSControlRule(id) {
 		return true
 	}
 	switch id {
 	case 949110, 959100, 980130, 980140:
+		return true
+	default:
+		return false
+	}
+}
+
+func isCRSControlRule(id int) bool {
+	group := id / 1000
+	return id == 941010 || isCRSParanoiaControlRule(id) || group == 949 || group == 959 || group == 980
+}
+
+func isCRSParanoiaControlRule(id int) bool {
+	controlID := id % 1000
+	if controlID < 11 || controlID > 18 {
+		return false
+	}
+	switch id / 1000 {
+	case 911, 913, 920, 921, 930, 931, 932, 933, 934,
+		941, 942, 943, 944, 949, 950, 951, 952, 953, 954, 955, 956, 959, 980:
 		return true
 	default:
 		return false

@@ -34,6 +34,7 @@ const TrafficEventsPage = lazy(() => import('./pages/TrafficEventsPage').then((m
 const ThreatLogsPage = lazy(() => import('./pages/ThreatLogsPage').then((m) => ({ default: m.ThreatLogsPage })));
 const TrafficControlOverviewPage = lazy(() => import('./pages/TrafficControlOverviewPage').then((m) => ({ default: m.TrafficControlOverviewPage })));
 const IpBlacklistPage = lazy(() => import('./pages/IpBlacklistPage').then((m) => ({ default: m.IpBlacklistPage })));
+const IpWhitelistPage = lazy(() => import('./pages/IpWhitelistPage').then((m) => ({ default: m.IpWhitelistPage })));
 const GeoBlockingPage = lazy(() => import('./pages/GeoBlockingPage').then((m) => ({ default: m.GeoBlockingPage })));
 const IpReputationPage = lazy(() => import('./pages/IpReputationPage').then((m) => ({ default: m.IpReputationPage })));
 const TrustedExceptionsPage = lazy(() => import('./pages/TrustedExceptionsPage').then((m) => ({ default: m.TrustedExceptionsPage })));
@@ -66,6 +67,7 @@ export const ROUTE_LOADERS: Partial<Record<NavItemKey, () => Promise<any>>> = {
   'traffic-control': () => import('./pages/TrafficControlOverviewPage'),
   'traffic-ratelimit': () => import('./pages/RateLimitingPage'),
   'traffic-blacklist': () => import('./pages/IpBlacklistPage'),
+  'traffic-whitelist': () => import('./pages/IpWhitelistPage'),
   'traffic-geo': () => import('./pages/GeoBlockingPage'),
   'traffic-reputation': () => import('./pages/IpReputationPage'),
   'traffic-priority': () => import('./pages/TrustedExceptionsPage'),
@@ -195,7 +197,7 @@ const AppContent: React.FC = () => {
       'origins', 'routing', 'proxy-settings', 'ssl',
       'waf-overview', 'waf-rulesets', 'waf-custom', 'waf-exclusions', 'waf-leak', 'waf-leak-protection',
       'traffic-control', 'traffic-overview', 'traffic-ratelimit',
-      'traffic-blacklist', 'traffic-geo', 'traffic-reputation', 'traffic-ddos', 'traffic-priority',
+      'traffic-blacklist', 'traffic-whitelist', 'traffic-geo', 'traffic-reputation', 'traffic-ddos', 'traffic-priority',
       'app-security', 'app-security-overview', 'app-security-request', 'app-security-payload', 'app-security-upload', 'app-security-response',
       'bot-overview', 'bot-managed', 'bot-rules', 'bot-classification', 'bot-ai', 'bot-exceptions',
       'api-security', 'api-inventory', 'api-contracts', 'api-authorization', 'api-graphql',
@@ -512,6 +514,9 @@ const AppContent: React.FC = () => {
         break;
       case 'traffic-blacklist':
         content = <IpBlacklistPage />;
+        break;
+      case 'traffic-whitelist':
+        content = <IpWhitelistPage />;
         break;
       case 'traffic-geo':
         content = <GeoBlockingPage />;

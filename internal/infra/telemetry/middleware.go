@@ -178,6 +178,7 @@ func Middleware(next http.Handler) http.Handler {
 					IP:                  clientIP,
 					Host:                host,
 					Path:                r.URL.Path,
+					QueryString:         r.URL.RawQuery,
 					Method:              r.Method,
 					Status:              wrapped.statusCode,
 					LatencyMs:           int64(latencyMs),

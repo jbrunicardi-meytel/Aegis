@@ -724,7 +724,7 @@ func buildTrafficEventsWhere(q TrafficEventsQuery) (string, []any, error) {
 		}
 		since = parsed.UTC()
 	}
-	clauses := []string{"timestamp >= ?"}
+	clauses := []string{"section = 'traffic'", "timestamp >= ?"}
 	args := []any{since}
 	add := func(clause string, value any) {
 		clauses = append(clauses, clause)
